@@ -9,9 +9,10 @@ use App\Models\Meter\Meter;
 use App\Models\Meter\MeterParameter;
 use App\Models\Transaction\Transaction;
 use GuzzleHttp\Client;
-use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\Log;
-use Inensus\StronMeter\Exceptions\StronApiResponseException;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Inensus\StronMeter\Exceptions\StronCreadentialsNotFoundException;
+use Inensus\StronMeter\Http\Requests\StronMeterApiRequests;
 use Inensus\StronMeter\Models\StronCredential;
 use Inensus\StronMeter\Models\StronTransaction;
 
@@ -24,6 +25,7 @@ class StronMeterApi implements IManufacturerAPI
     private $stronTransaction;
     private $mainSettings;
     private $credentials;
+    private $stronMeterApiRequests;
 
     public function __construct(
         Client $httpClient,
@@ -31,7 +33,8 @@ class StronMeterApi implements IManufacturerAPI
         StronTransaction $stronTransaction,
         Transaction $transaction,
         MainSettings $mainSettings,
-        StronCredential $credentials
+        StronCredential $credentials,
+        StronMeterApiRequests $stronMeterApiRequests
     ) {
         $this->api = $httpClient;
         $this->meterParameter = $meterParameter;
@@ -39,6 +42,7 @@ class StronMeterApi implements IManufacturerAPI
         $this->transaction = $transaction;
         $this->mainSettings = $mainSettings;
         $this->credentials = $credentials;
+        $this->stronMeterApiRequests = $stronMeterApiRequests;
     }
 
     public function chargeMeter(TransactionDataContainer $transactionContainer): array
@@ -57,7 +61,11 @@ class StronMeterApi implements IManufacturerAPI
             ];
         } else {
             $meter = $transactionContainer->meter;
-            $credentials = $this->credentials->newQuery()->firstOrFail();
+            try {
+                $credentials = $this->credentials->newQuery()->firstOrFail();
+            } catch (ModelNotFoundException $e) {
+                throw new StronCreadentialsNotFoundException($e->getMessage());
+            }
             $mainSettings = $this->mainSettings->newQuery()->first();
             $postParams = [
                 "CustomerId" => strval($meterParameter->owner->id),
@@ -70,28 +78,8 @@ class StronMeterApi implements IManufacturerAPI
                 "Employee" => $credentials->username,
                 "ApiToken" => $credentials->api_token
             ];
-            try {
-                $request = $this->api->post(
-                    $credentials->api_url . $this->rootUrl,
-                    [
-                        'body' => json_encode($postParams),
-                        'headers' => [
-                            'Content-Type' => 'application/json;charset=utf-8',
-                        ],
-                    ]
-                );
-                $transactionResult = explode(",", (string)$request->getBody());
-            } catch (GuzzleException $gException) {
-                Log::critical(
-                    'Stron API Transaction Failed',
-                    [
-                        'URL :' => $this->rootUrl,
-                        'Body :' => json_encode($postParams),
-                        'message :' => $gException->getMessage()
-                    ]
-                );
-                throw new StronApiResponseException($gException->getMessage());
-            }
+            $url = $credentials->api_url . $this->rootUrl;
+            $transactionResult = $this->stronMeterApiRequests->post($url, $postParams);
             $this->associateManufacturerTransaction($transactionContainer, $transactionResult);
             $token = $transactionResult[0];
             return [
@@ -110,9 +98,9 @@ class StronMeterApi implements IManufacturerAPI
         TransactionDataContainer $transactionContainer,
         $transactionResult = []
     ) {
-            $manufacturerTransaction = $this->stronTransaction->newQuery()->create([
-                'transaction_id' => $transactionContainer->transaction->id,
-            ]);
+        $manufacturerTransaction = $this->stronTransaction->newQuery()->create([
+            'transaction_id' => $transactionContainer->transaction->id,
+        ]);
         $transaction = $this->transaction->newQuery()->whereHasMorph(
             'originalTransaction',
             '*',

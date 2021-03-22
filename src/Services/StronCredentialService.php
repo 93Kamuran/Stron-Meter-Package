@@ -58,8 +58,8 @@ class StronCredentialService
         ];
 
         try {
-            $result = $this->stronApi->token($this->rootUrl, $postParams);
-
+            $url = $credential->api_url. $this->rootUrl;
+            $result = $this->stronApi->token($url, $postParams);
             $credential->update([
                 'api_token' => $result,
                 'is_authenticated' => true
